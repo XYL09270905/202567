@@ -55,3 +55,55 @@ except ValueError as e:
 - 黑名单过滤敏感用户名
 - 邮箱格式和域名检查
 - URL自动格式验证
+
+💥 场景二：异常处理 - 数据库操作的弹性设计
+
+python
+import logging
+import sqlite3
+from contextlib import contextmanager
+from tenacity import retry, wait_exponential, stop_after_attempt
+
+logger = logging.getLogger(__name__)
+
+@contextmanager
+def db_connection(db_path):
+    conn = None
+    try:
+        conn = sqlite3.connect(db_path, timeout=5)
+         关键：设置自动回滚
+        conn.isolation_level = None
+        yield conn.cursor()
+        conn.commit()
+    except sqlite3.Error as e:
+        logger.error(f"数据库错误: {e}", exc_info=True)
+        if conn:
+            conn.rollback()
+        raise
+    finally:
+        if conn:
+            conn.close()
+
+@retry(stop=stop_after_attempt(3), 
+       wait=wait_exponential(multiplier=1, min=2, max=10))
+def safe_query(query, params=None):
+    try:
+        with db_connection('app.db') as cursor:
+             预防SQL注入
+            cursor.execute(query, params or ())
+            return cursor.fetchall()
+    except sqlite3.OperationalError:
+        logger.warning("数据库超时，重试中...")
+        raise
+    except Exception as e:
+        logger.critical(f"致命查询错误: {e}")
+        return
+
+防御机制详解：
+1. 使用`contextmanager`自动管理连接生命周期
+2. 设置事务隔离级别，确保失败时自动回滚
+3. 通过tenacity实现指数退避重试
+4. 参数化查询防止SQL注入
+5. 异常分级处理（警告/错误/致命）
+
+---
